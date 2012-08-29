@@ -1,0 +1,117 @@
+#!/bin/sh
+
+# DATOS DE CONFIGURACIÓN
+HOST='lientes.com'
+USER='liente'
+
+LOCALDIR="${HOME}/www/your-local-wp-directory/"
+LOCALDBHOST='127.0.0.1'
+LOCALDBUSR='local-db-username'
+LOCALDBPWD='local-db-pass'
+LOCALDB='local-db-name'
+
+REMOTEDIR='~/remote/directory'
+REMOTEDBHOST='remote-db-host'
+REMOTEDBUSR='remote-db-user'
+REMOTEDBPWD='remote-db-pass'
+REMOTEDB='remote-db-name'
+
+# REEMPLAZOS
+OLD[0]='/dominio.local'; NEW[0]='/my.dominio.com';
+
+# MODIFICAR CUIDADOSAMENTE
+TMPDIR="${HOME}/tmp/"
+TMPDIR2="$TMPDIR${RANDOM}/"
+TMPSQLFILE="$(echo "DUMP_${LOCALDB}_$(date +"%d_%B_%Y")" | tr -s '[:lower:]'  '[:upper:]').sql"
+SQLFILEPATH="${TMPDIR}${TMPSQLFILE}"
+
+####################################
+###		Empezamos a programar	 ###
+####################################
+
+
+
+txtrst=$(tput sgr0) # Text reset
+txtred=$(tput setaf 1) # Red
+txtbold=$(tput bold 1) # Bold
+
+echo "\r\r\r\r"
+echo "${txtbold}${txtred}Importante!\nFíjese bien en las valores de la configuración antes de proceder${txtrst}"
+echo "\r\r\r\r"
+echo "HOST		: ${HOST}"
+echo "USER		: ${USER}"
+echo "LOCALDIR	: ${LOCALDIR}"
+echo "REMOTEDIR	: ${REMOTEDIR}"
+echo "\r\r\r\r"
+echo "${txtbold}${txtred}Está seguro que desea continuar? (S/N)[N]:${txtrst}"
+
+read choice
+case $choice in
+		"N"|"")
+         	echo 'Cancelado'
+		;;
+			
+		"S"|"Y")
+			# Si no existe el directorio temporal base entonces lo creamos
+			if [ ! -d "$TMPDIR" ]; then
+			    mkdir $TMPDIR
+			fi
+
+			# si no existe directorio que contendrá todos los archivos temporales lo creamos
+			if [ ! -d "$TMPDIR2" ]; then
+			    mkdir $TMPDIR2
+			fi
+			
+			# Dumpeamos la BD local a un archivo temporal
+			mysqldump -u $LOCALDBUSR -p$LOCALDBPWD $LOCALDB > $SQLFILEPATH
+
+
+
+			c=0; end=${#OLD[@]};
+			while [ $c -le $end ];
+			do
+				if [ $c -eq $end ]; then
+					mv $SQLFILEPATH "${TMPDIR}${TMPSQLFILE}"
+					SQLFILEPATH=$TMPDIR$TMPSQLFILE
+				else
+					#escapamos los slashes
+					old=${OLD[$c]//\//\\/};
+					new=${NEW[$c]//\//\\/}
+
+					#reemplazamos el archivo del dump de la BD y guardamos en un archivo temporal
+					tmpfile="${TMPDIR2}temp_${RANDOM}.sql"
+					sed -e "s/${old}/${new}/g" $SQLFILEPATH  > $tmpfile
+					SQLFILEPATH=$tmpfile
+				fi
+				let c=$c+1;
+			done
+
+			# Restauramos elzarchivo modificado en la base de datos del servidor
+			# ssh $USER@$HOST "mysql -u $REMOTEDBUSR -p'${REMOTEDBPWD}' -h $REMOTEDBHOST $REMOTEDB < $TMPSQLFILE"
+			# echo "ssh $USER@$HOST mysql -u $REMOTEDBUSR -p'$REMOTEDBPWD' -h $REMOTEDBHOST $REMOTEDB < $SQLFILEPATH"
+			
+			echo "subimos archivo de DB a $USER@$HOST:~/"
+			scp $SQLFILEPATH $USER@$HOST:~/
+			
+			echo 'Restauramos el archivo modificado en la base de datos del servidor'
+			ssh $USER@$HOST "mysql -u $REMOTEDBUSR -p'${REMOTEDBPWD}' -h $REMOTEDBHOST $REMOTEDB < $TMPSQLFILE"
+			
+			
+			if [ -d "$LOCALDIR" ]; then
+				rsync -e "ssh -l $USER" -av --delete-after $LOCALDIR $HOST:$REMOTEDIR
+			else
+				echo "ERROR: HOMEDIR $LOCALDIR no existe"
+			fi
+			
+			# Reemplazamos archivo wp-config en servidor Remoto y lo guardamos
+			ssh $USER@$HOST "sed -e "s/$LOCALDBHOST/$REMOTEDBHOST/g"  -e "s/$LOCALDB/$REMOTEDB/g" -e "s/$LOCALDBUSR/$REMOTEDBUSR/g" -e "s/$LOCALDBPWD/$( echo $REMOTEDBPWD | sed -e 's/[\/><.*&]/\\&/g')/g" /remote/directory/wp-config.php  > /remote/directory/wp-config2.php;
+							mv -b /remote/directory/wp-config2.php /remote/directory/wp-config.php;"
+
+			#eliminamos archivos temporales creados
+			rm -r $TMPDIR2
+
+		;;
+			
+esac
+
+echo bye
